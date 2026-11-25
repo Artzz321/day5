@@ -1,0 +1,135 @@
+1. KQL Investigation Queries
+Query 1: Filter Failing Requests with Error Details
+
+requests
+ | where success == false
+ | project timestamp, name, resultCode, duration, cloud_RoleName, operation_Id
+ | order by timestamp asc
+
+Query 2: Correlate Requests with Unhandled C# Exceptions via Join
+
+requests
+ | where success == false
+ | join kind=inner (
+ exceptions
+ | where handledAt != "UserCode"
+ | project operation_Id, type, method, message, handledAt
+ ) on operation_Id
+ | project operation_Id, name, resultCode, type, method, message
+
+Query 3: Dependency Failure Rate & Duration Mapping
+
+dependencies
+ | summarize TotalCalls = count(), FailedCalls = countif(success == false), FailureRate = round(100.0 * countif(success == false) / count(), 2), AvgDuration = round(avg(duration), 2) by target, type
+ | extend OperationalHealth = iff(FailureRate > 0, "Unhealthy", "Healthy")
+ | order by FailureRate desc
+
+Query 4: Time-Series Error Render
+
+requests
+ | where success == false
+ | summarize ErrorCount = count() by bin(timestamp, 1m)
+ | render timechart
+
+2. Request-to-Exception Correlation Breakdown
+Operation ID: op-8921-az
+Request Name: POST /api/v2/orders/checkout
+Result Code: 500
+Exception Class: System.Data.SqlClient.SqlException
+Method Name: OrderRepository.SaveOrderAsync
+Root Cause Message: Execution Timeout Expired.
+Operation ID: op-8922-az
+Request Name: POST /api/v2/orders/checkout
+Result Code: 500
+Exception Class: System.Data.SqlClient.SqlException
+Method Name: OrderRepository.SaveOrderAsync
+Root Cause Message: Execution Timeout Expired.
+Operation ID: op-8925-az
+Request Name: POST /api/v2/orders/checkout
+Result Code: 504
+Exception Class: System.Net.Http.HttpRequestException
+Method Name: PaymentGatewayClient.AuthorizeCharge
+Root Cause Message: HTTP 504 Gateway Timeout.
+3. Downstream Dependency Failure Rate Matrix
+SQL Database
+Dependency Target: sql-ecommerce-prod.database.windows.net
+Dependency Type: SQL
+Total Calls: 2
+Failed Calls: 2
+Failure Rate: 100%
+Average Duration: 3035 ms
+Operational Health: Unhealthy
+Cosmos DB
+Dependency Target: cosmosdb-catalog-prod.documents.azure.com
+Dependency Type: Azure DocumentDB
+Total Calls: 1
+Failed Calls: 0
+Failure Rate: 0%
+Average Duration: 12.5 ms
+Operational Health: Healthy
+Redis Cache
+Dependency Target: redis-cache-prod.redis.cache.windows.net:6380
+Dependency Type: Redis
+Total Calls: 1
+Failed Calls: 0
+Failure Rate: 0%
+Average Duration: 3.2 ms
+Operational Health: Healthy
+Payment Gateway
+Dependency Target: https://payments.partner-api.com
+Dependency Type: HTTP
+Observed Error: HTTP 504 Gateway Timeout
+Operational Health: Unhealthy
+4. Root Cause Diagnosis & Alert Rule
+Root Cause Diagnosis
+
+The OrderingMicroservice experienced checkout failures due to SQL database execution timeouts and payment gateway HTTP 504 errors.
+
+SQL Database Failure:
+
+Affected Operations: op-8921-az, op-8922-az
+Exception: System.Data.SqlClient.SqlException
+Method: OrderRepository.SaveOrderAsync
+Root Cause: SQL database execution timeout.
+Impact: HTTP 500 checkout failures.
+
+Payment Gateway Failure:
+
+Affected Operation: op-8925-az
+Exception: System.Net.Http.HttpRequestException
+Method: PaymentGatewayClient.AuthorizeCharge
+Root Cause: Payment gateway timeout.
+Impact: HTTP 504 checkout failure.
+Recommended Remediation
+Optimize SQL queries and stored procedures.
+Investigate database execution timeouts.
+Implement retry mechanisms with exponential backoff.
+Monitor payment gateway response times.
+Configure Azure Monitor alerts.
+Monitor dependency failures using Application Insights.
+Recommended Azure Monitor Alert Rule
+
+Alert Name: OrderingMicroservice-Checkout-Failure-Alert
+
+KQL Query:
+
+requests
+ | where cloud_RoleName == "OrderingMicroservice"
+ | where success == false
+ | summarize FailedRequests = count() by bin(timestamp, 5m)
+ | where FailedRequests >= 2
+
+Alert Configuration:
+
+Evaluation Frequency: 5 minutes
+Lookback Period: 5 minutes
+Threshold: 2 or more failed requests
+Severity: 2 (Warning)
+Action: Notify operations team.
+5. Conclusion
+
+The investigation identified SQL database execution timeouts and payment gateway HTTP 504 errors as the primary causes of checkout failures.
+
+The SQL dependency recorded a 100% failure rate across two observed calls, while Cosmos DB and Redis operated successfully.
+
+Recommended improvements include SQL optimization, retry mechanisms, dependency monitoring, and Azure Monitor alerting.
